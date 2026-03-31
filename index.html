@@ -509,9 +509,7 @@ function showSV(id){
   if(el&&cnt)el.addEventListener('input',()=>cnt.textContent=el.value.length);
 });
 
-// Promise 제출
-let currentUser=null;
-
+// Promise 제출 — GET + action=save 방식
 async function submitPromise(){
   const name=document.getElementById('w-name').value.trim();
   const dept=document.getElementById('w-dept').value.trim();
@@ -546,14 +544,13 @@ async function submitPromise(){
 
   const now=new Date();
   const dateStr=`${now.getMonth()+1}/${now.getDate()}`;
-  const payload={name,dept,summary,appreciate,accept,discard,promise,date:dateStr};
+
+  const params=new URLSearchParams({
+    action:'save', name, dept, summary, appreciate, accept, discard, promise, date:dateStr
+  });
 
   try{
-    await fetch(SCRIPT_URL,{
-      method:'POST',
-      mode:'no-cors',
-      body:JSON.stringify(payload)
-    });
+    await fetch(`${SCRIPT_URL}?${params.toString()}`);
     currentUser=name;
     document.getElementById('cp-writer').textContent=`${name} · ${dept}`;
     document.getElementById('cp-promise').textContent=promise.length>100?promise.slice(0,100)+'…':promise;
@@ -566,79 +563,69 @@ async function submitPromise(){
   }
 }
 
-// 게이트
+// 게이트 — JSONP 방식으로 조회
+function jsonpFetch(url){
+  return new Promise((resolve, reject)=>{
+    const cbName='cb_'+Math.random().toString(36).slice(2);
+    const script=document.createElement('script');
+    const timer=setTimeout(()=>{
+      delete window[cbName];
+      document.body.removeChild(script);
+      reject(new Error('timeout'));
+    }, 8000);
+    window[cbName]=(data)=>{
+      clearTimeout(timer);
+      delete window[cbName];
+      document.body.removeChild(script);
+      resolve(data);
+    };
+    script.src=`${url}&callback=${cbName}`;
+    script.onerror=()=>{ clearTimeout(timer); reject(new Error('script error')); };
+    document.body.appendChild(script);
+  });
+}
+
 async function checkGate(){
   const name=document.getElementById('gate-name').value.trim();
   if(!name)return;
   const errEl=document.getElementById('gate-error');
   errEl.style.display='none';
+  errEl.style.color='var(--red)';
+
   try{
-    const res=await fetch(SCRIPT_URL+'?name='+encodeURIComponent(name));
-    const json=await res.json();
+    const json=await jsonpFetch(SCRIPT_URL+'?t='+Date.now());
     const found=json.data&&json.data.some(p=>p.name===name);
-    if(found){currentUser=name;await loadAndRender();showSV('list');}
-    else{errEl.style.display='block';}
-  }catch(e){errEl.textContent='연결 오류가 발생했어요. 잠시 후 다시 시도해주세요.';errEl.style.display='block';}
+    if(found){
+      currentUser=name;
+      await loadAndRender();
+      showSV('list');
+    } else {
+      // 작성 기록 없음
+      errEl.textContent='아직 Promise를 작성하지 않으셨어요. 먼저 본인의 Promise를 작성해주세요!';
+      errEl.style.display='block';
+    }
+  }catch(e){
+    // 연결 오류 — 별도 구분
+    errEl.textContent='서버 연결에 실패했어요. 잠시 후 다시 시도해주세요.';
+    errEl.style.color='var(--orange)';
+    errEl.style.display='block';
+  }
 }
 
-async function goViewAfterWrite(){await loadAndRender();showSV('list');}
+async function goViewAfterWrite(){ await loadAndRender(); showSV('list'); }
 
-// 목록
+// 목록 — JSONP 방식으로 조회
 let promiseCache=[];
 async function loadAndRender(){
   const listEl=document.getElementById('p-list');
   listEl.innerHTML='<div class="spinner-wrap"><div class="spinner"></div>불러오는 중...</div>';
   try{
-    const res=await fetch(SCRIPT_URL);
-    const json=await res.json();
+    const json=await jsonpFetch(SCRIPT_URL+'?t='+Date.now());
     promiseCache=(json.data||[]).filter(p=>p.name).reverse();
     renderList();
   }catch(e){
     listEl.innerHTML='<div class="state-box"><div class="state-emoji">😥</div><div class="state-title">불러오기 실패</div><div class="state-sub">잠시 후 다시 시도해주세요</div></div>';
   }
 }
-
-function renderList(){
-  const q=(document.getElementById('p-search')?.value||'').trim();
-  let list=promiseCache.filter(p=>p.name);
-  if(q)list=list.filter(p=>p.name.includes(q)||(p.dept||'').includes(q));
-  document.getElementById('p-count').textContent=list.length;
-  if(!list.length){
-    document.getElementById('p-list').innerHTML=`<div class="state-box"><div class="state-emoji">${q?'🔍':'📭'}</div><div class="state-title">${q?'검색 결과가 없어요':'아직 작성된 Promise가 없어요'}</div><div class="state-sub">${q?'이름이나 소속을 다시 확인해보세요':'첫 번째로 Promise를 선언해보세요!'}</div></div>`;
-    return;
-  }
-  document.getElementById('p-list').innerHTML=list.map(p=>{
-    const av=avCls(p.name);
-    const hasAccept=p.accept&&p.accept.trim();
-    const hasDiscard=p.discard&&p.discard.trim();
-    const adHtml=(hasAccept||hasDiscard)?`<div class="p-ad-grid">
-      ${hasAccept?`<div class="p-ad-box p-ad-box-accept"><div class="p-ad-box-label">✅ Accept</div><div class="p-ad-box-text">${esc(p.accept)}</div></div>`:'<div></div>'}
-      ${hasDiscard?`<div class="p-ad-box p-ad-box-discard"><div class="p-ad-box-label">🔄 Discard</div><div class="p-ad-box-text">${esc(p.discard)}</div></div>`:'<div></div>'}
-    </div>`:'';
-    return `<div class="p-card">
-      <div class="p-card-header">
-        <div class="p-av ${av}">${esc(p.name.charAt(0))}</div>
-        <div><div class="p-name">${esc(p.name)}</div><div class="p-dept">${esc(p.dept||'')}</div></div>
-        <div class="p-date">${esc(p.date||'')}</div>
-      </div>
-      <div class="p-card-body">
-        <div class="p-sec">
-          <div class="p-sec-label"><div class="p-sec-icon" style="background:var(--blue-bg)">📝</div>피드백 Summary</div>
-          <div class="p-sec-text">${esc(p.summary)}</div>
-        </div>
-        <div class="p-sec">
-          <div class="p-sec-label"><div class="p-sec-icon" style="background:var(--orange-bg)">🤝</div>Appreciate</div>
-          <div class="p-sec-text">${esc(p.appreciate)}</div>
-        </div>
-        ${adHtml?`<div class="p-sec"><div class="p-sec-label"><div class="p-sec-icon" style="background:var(--green-bg)">↔️</div>Accept &amp; Discard</div>${adHtml}</div>`:''}
-        <div class="p-sec">
-          <div class="p-sec-label"><div class="p-sec-icon" style="background:var(--purple-bg)">🌱</div>Promise</div>
-          <div class="p-sec-text">${esc(p.promise)}</div>
-        </div>
-      </div>
-    </div>`;
-  }).join('');
-}
-</script>
 </body>
 </html>
